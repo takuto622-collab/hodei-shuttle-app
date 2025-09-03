@@ -265,7 +265,7 @@ export default function App() {
   function exportCSV() {
     const rows = [["日付", "便", "車両", "氏名", "所属", "ピックアップ"]];
     const current = mode === "go" ? dayData.go : dayData.back;
-    for (const vid of VEHICLE_IDS) {
+     for (const vid of VISIBLE_VEHICLES) {
       for (const a of current[vid]) {
         rows.push([
           selectedDate,
@@ -593,7 +593,7 @@ export default function App() {
                     if (!draggingId) return;
                     const x = e.clientX, y = e.clientY; setDragPos({ x, y });
                     let over = null;
-                    for (const vid of VEHICLE_IDS) {
+                    for (const vid of VISIBLE_VEHICLES) {
                       const el = vehicleRefs.current[vid]?.current; if (!el) continue;
                       const r = el.getBoundingClientRect();
                       if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) { over = vid; break; }
