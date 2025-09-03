@@ -166,6 +166,9 @@ export default function App() {
   const [hoverVehicle, setHoverVehicle] = useState/** @type {string|null} */(null);
   const vehicleRefs = useRef(Object.fromEntries(VEHICLE_IDS.map(id => [id, React.createRef()])));
 
+　// 表示対象の車（ONのみ）
+　const VISIBLE_VEHICLES = VEHICLE_IDS.filter(id => enabledVehicles[id]);
+
   // 名簿パネル幅（ドラッグ調整）
   const [rosterWidth, setRosterWidth] = useState(persisted?.rosterWidth ?? 360);
   const [resizing, setResizing] = useState(false);
