@@ -714,128 +714,119 @@ export default function App() {
       </div>
 
       {/* 設定モーダル */}
-      {openSettings && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setOpenSettings(false)}>
-          <div className="bg-white rounded-2xl shadow-xl w-[720px] max-w-[90vw] p-4" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-semibold">設定（所属カラーの固定）</h2>
-              <button className="px-3 py-1.5 rounded border" onClick={() => setOpenSettings(false)}>閉じる</button>
-            </div>
+{openSettings && (
+  <div
+    className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+    onClick={() => setOpenSettings(false)}
+  >
+    <div
+      className="bg-white rounded-2xl shadow-xl w-[720px] max-w-[90vw] p-4"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-lg font-semibold">設定（所属カラーの固定）</h2>
+        <button className="px-3 py-1.5 rounded border" onClick={() => setOpenSettings(false)}>閉じる</button>
+      </div>
 
-            <div className="mb-3 flex items-center gap-2">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={groupLock} onChange={e => setGroupLock(e.target.checked)} />
-                所属リストを固定（自由入力を禁止）
-              </label>
-              <span className="text-xs text-gray-500">※ONだと児童の所属は下のリストに限定されます</span>
-            </div>
+      {/* 所属ロック */}
+      <div className="mb-3 flex items-center gap-2">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={groupLock}
+            onChange={(e) => setGroupLock(e.target.checked)}
+          />
+          所属リストを固定（自由入力を禁止）
+        </label>
+        <span className="text-xs text-gray-500">※ONだと児童の所属は下のリストに限定されます</span>
+      </div>
 
-            <div className="text-sm text-gray-600 mb-2">所属名と色を施設仕様に合わせて固定できます（名簿・配車表示に反映）。</div>
-            <div className="space-y-2 max-h-[50vh] overflow-auto pr-1">
-              {groups.map((g, i) => (
-           {/* ここから：車の有効/無効 */}
-<div className="mt-6">
-  <h3 className="font-medium mb-2">車の有効/無効（表示する台数を調整）</h3>
-  <div className="grid grid-cols-4 gap-2">
-    {VEHICLE_IDS.map((vid, i) => (
-      <label key={vid} className="flex items-center gap-2 border rounded px-2 py-1">
-        <input
-          type="checkbox"
-          checked={!!enabledVehicles[vid]}
-          onChange={(e) => {
-            const on = e.target.checked;
-            setEnabledVehicles(prev => ({ ...prev, [vid]: on }));
-          }}
-        />
-        <span className="text-sm">
-          {vehicleNames[vid] || `車${i + 1}`}（{vid}）
-        </span>
-      </label>
-    ))}
-  </div>
-  <div className="text-xs text-gray-500 mt-1">
-    チェックを外すと、その車の枠は非表示（＝使わない場所）。<br/>
-    表示中の車だけがドラッグ&ドロップやCSV出力の対象になります。
-  </div>
-</div>
-{/* ここまで：車の有効/無効 */}
-
-                <div key={i} className="flex items-center gap-2">
-                  <input className="border rounded px-2 py-1 w-40" value={g.name}
-                    onChange={(e) => setGroups(prev => prev.map((x, idx) => idx === i ? { ...x, name: e.target.value } : x))} />
-                  <input type="color" className="w-10 h-8 p-0 border rounded" value={g.color}
-                    onChange={(e) => setGroups(prev => prev.map((x, idx) => idx === i ? { ...x, color: e.target.value } : x))} />
-                  <div className="text-xs text-gray-500">例: 赤 / 放課後A / 低学年 など</div>
-                  <button className="ml-auto text-xs text-red-600" onClick={() => {
-                    setGroups(prev => prev.filter((_, idx) => idx !== i));
-                  }}>削除</button>
-                </div>
-              ))}
-            </div>
-            <div className="mt-3 flex items-center gap-2">
-              <button className="px-3 py-1.5 rounded bg-gray-200" onClick={() => setGroups(prev => [...prev, { name: "新規所属", color: "#9ca3af" }])}>所属を追加</button>
-              <button className="px-3 py-1.5 rounded bg-blue-600 text-white" onClick={() => setOpenSettings(false)}>保存して閉じる</button>
-            </div>
+      {/* 所属カラー編集リスト */}
+      <div className="text-sm text-gray-600 mb-2">
+        所属名と色を施設仕様に合わせて固定できます（名簿・配車表示に反映）。
+      </div>
+      <div className="space-y-2 max-h-[50vh] overflow-auto pr-1">
+        {groups.map((g, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <input
+              className="border rounded px-2 py-1 w-40"
+              value={g.name}
+              onChange={(e) =>
+                setGroups((prev) =>
+                  prev.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x))
+                )
+              }
+            />
+            <input
+              type="color"
+              className="w-10 h-8 p-0 border rounded"
+              value={g.color}
+              onChange={(e) =>
+                setGroups((prev) =>
+                  prev.map((x, idx) => (idx === i ? { ...x, color: e.target.value } : x))
+                )
+              }
+            />
+            <div className="text-xs text-gray-500">例: 赤 / 放課後A / 低学年 など</div>
+            <button
+              className="ml-auto text-xs text-red-600"
+              onClick={() => {
+                setGroups((prev) => prev.filter((_, idx) => idx !== i));
+              }}
+            >
+              削除
+            </button>
           </div>
+        ))}
+      </div>
+
+      {/* ←←← ここで所属リストのブロックがしっかり閉じているのがポイント（上の </div> で終了） */}
+
+      {/* ここから：車の有効/無効 */}
+      <div className="mt-6">
+        <h3 className="font-medium mb-2">車の有効/無効（表示する台数を調整）</h3>
+        <div className="grid grid-cols-4 gap-2">
+          {VEHICLE_IDS.map((vid, i) => (
+            <label key={vid} className="flex items-center gap-2 border rounded px-2 py-1">
+              <input
+                type="checkbox"
+                checked={!!enabledVehicles[vid]}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setEnabledVehicles((prev) => ({ ...prev, [vid]: on }));
+                }}
+              />
+              <span className="text-sm">
+                {vehicleNames[vid] || `車${i + 1}`}（{vid}）
+              </span>
+            </label>
+          ))}
         </div>
-      )}
-
-      {/* ホワイトボード取り込みモーダル */}
-      {wbOpen && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setWbOpen(false)}>
-          <div className="bg-white rounded-2xl shadow-xl w-[920px] max-w-[95vw] p-4" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-semibold">ホワイトボードから取り込み（8枠グリッド）</h2>
-              <button className="px-3 py-1.5 rounded border" onClick={() => setWbOpen(false)}>閉じる</button>
-            </div>
-
-            {!wbImage ? (
-              <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-100 cursor-pointer">
-                画像を選択
-                <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files && setWbImage(e.target.files[0])} />
-              </label>
-            ) : (
-              <>
-                <div className="grid grid-cols-[1fr_280px] gap-4">
-                  {/* 画像＋グリッドオーバーレイ（プレビュー用） */}
-                  <WhiteboardPreview blob={wbImage} margins={wbMargins} gaps={wbGaps} />
-
-                  {/* 調整パネル */}
-                  <div className="space-y-3">
-                    <div className="text-sm text-gray-600">マージン（%）</div>
-                    {["top","left","right","bottom"].map(k=>(
-                      <div key={k} className="flex items-center gap-2">
-                        <label className="w-16 text-sm">{k}</label>
-                        <input type="range" min={0} max={20} step={0.5}
-                          value={wbMargins[k]} onChange={e=> setWbMargins(v=> ({...v, [k]: Number(e.target.value)}))} />
-                        <span className="w-10 text-right text-sm">{wbMargins[k]}</span>
-                      </div>
-                    ))}
-                    <div className="text-sm text-gray-600 mt-2">ギャップ（%）</div>
-                    {["col","row"].map(k=>(
-                      <div key={k} className="flex items-center gap-2">
-                        <label className="w-16 text-sm">{k}</label>
-                        <input type="range" min={0} max={10} step={0.5}
-                          value={wbGaps[k]} onChange={e=> setWbGaps(v=> ({...v, [k]: Number(e.target.value)}))} />
-                        <span className="w-10 text-right text-sm">{wbGaps[k]}</span>
-                      </div>
-                    ))}
-
-                    <div className="pt-2 flex gap-2">
-                      <button className="px-3 py-2 rounded bg-gray-200" onClick={()=> setWbImage(null)}>別の画像にする</button>
-                      <button className="px-3 py-2 rounded bg-blue-600 text-white" onClick={wbRunImport}>この設定で取り込む</button>
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      ヒント: 4×2の枠がホワイトボードの「8車の区画」に重なるように、マージンとギャップを調整してください。
-                      各枠の中に書かれた氏名が、そのまま v1〜v8（左上から右へ/次の行へ）に割り当たります。
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
+        <div className="text-xs text-gray-500 mt-1">
+          チェックを外すと、その車の枠は非表示（＝使わない場所）。<br />
+          表示中の車だけがドラッグ&ドロップやCSV出力の対象になります。
         </div>
-      )}
+      </div>
+      {/* ここまで：車の有効/無効 */}
+
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          className="px-3 py-1.5 rounded bg-gray-200"
+          onClick={() => setGroups((prev) => [...prev, { name: "新規所属", color: "#9ca3af" }])}
+        >
+          所属を追加
+        </button>
+        <button
+          className="px-3 py-1.5 rounded bg-blue-600 text-white"
+          onClick={() => setOpenSettings(false)}
+        >
+          保存して閉じる
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
 
       {/* ドラッグ中のゴースト */}
       {draggingId && (
