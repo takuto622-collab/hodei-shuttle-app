@@ -1,13 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-async function importFromImage(file){
-  setOcrBusy(true); setOcrLog("画像解析を開始...");
-  try{
-    const { default: Tesseract } = await import("tesseract.js");  // ← ここで読み込む
-    const { data } = await Tesseract.recognize(file, "jpn", {
-      logger: m => { if (m.status) setOcrLog(`${m.status} ${m.progress ? Math.round(m.progress*100)+'%' : ''}`); }
-    });
-    // …以下は今のままでOK…
-
+import Tesseract from "tesseract.js";
 
 /** @typedef {{ id: string; name: string; group?: string }} Student */
 /** @typedef {{ studentId: string; pickup: string }} Assignment */
