@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /* =========================
-   放デイ送迎アプリ v6
+   放デイ送迎アプリ v7
+   追加:
+   - 名簿パネルの幅をドラッグで調整（スプリッター）
+   - ホワイトボード取り込み（領域指定β：4x2=8車グリッドを画像上に重ねてOCR）
+   既存:
    - iPad/Safari対策: structuredClone代替, OCRは動的読み込み
    - 行き/帰り、8車固定、非スクロールページ
    - 所属カラー固定(設定でロックON/OFF)
    - 日付：今日±10日＋<input type="date">
    - CSV入出力（降車なし: 日付,便,車両,氏名,所属,ピックアップ）
-   - OCR(β)：前処理(拡大＋二値化)＋ゆるい車名/氏名パース
    ========================= */
 
 // ---- Safari/iPad対策: structuredClone 代替
@@ -21,7 +24,7 @@ const clone = (obj) =>
 const VEHICLE_COUNT = 8;
 const VEHICLE_IDS = Array.from({ length: VEHICLE_COUNT }, (_, i) => `v${i + 1}`);
 
-const STORAGE_KEY = "dispatch-mvp-v6";
+const STORAGE_KEY = "dispatch-mvp-v7";
 
 // ---- 日付 utils
 function fmt(d) { return d.toISOString().slice(0, 10); }
@@ -72,9 +75,9 @@ function emptyVehicleMap() {
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
 // ---- 画像前処理（拡大＋グレースケール＋二値化）
-async function preprocessImage(file) {
+async function preprocessImageBlob(blob) {
   const img = new Image();
-  const url = URL.createObjectURL(file);
+  const url = URL.createObjectURL(blob);
   await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
 
   const scale = 2;
@@ -94,6 +97,21 @@ async function preprocessImage(file) {
   ctx.putImageData(id, 0, 0);
 
   return await new Promise(res => canvas.toBlob(b => { URL.revokeObjectURL(url); res(b); }, "image/png"));
+}
+
+// 画像の一部を切り出してBlobにする
+async function cropBlob(originalBlob, crop) {
+  const img = new Image();
+  const url = URL.createObjectURL(originalBlob);
+  await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = crop.w;
+  canvas.height = crop.h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, crop.w, crop.h);
+  URL.revokeObjectURL(url);
+  return await new Promise(res => canvas.toBlob(b => res(b), "image/png"));
 }
 
 export default function App() {
@@ -144,6 +162,17 @@ export default function App() {
   const [hoverVehicle, setHoverVehicle] = useState/** @type {string|null} */(null);
   const vehicleRefs = useRef(Object.fromEntries(VEHICLE_IDS.map(id => [id, React.createRef()])));
 
+  // 名簿パネル幅（ドラッグ調整）
+  const [rosterWidth, setRosterWidth] = useState(persisted?.rosterWidth ?? 360);
+  const [resizing, setResizing] = useState(false);
+
+  // ホワイトボード取り込みモーダル
+  const [wbOpen, setWbOpen] = useState(false);
+  const [wbImage, setWbImage] = useState/** @type {Blob|null} */(null);
+  // グリッド配置（%単位）
+  const [wbMargins, setWbMargins] = useState(persisted?.wbMargins ?? { top: 5, left: 5, right: 5, bottom: 5 });
+  const [wbGaps, setWbGaps] = useState(persisted?.wbGaps ?? { col: 2, row: 2 });
+
   // 選択日の存在保証
   useEffect(() => {
     setByDate(prev => {
@@ -154,8 +183,8 @@ export default function App() {
 
   // 保存
   useEffect(() => {
-    LS.save({ students, byDate, vehicleNames, selectedDate, mode, groups, groupLock });
-  }, [students, byDate, vehicleNames, selectedDate, mode, groups, groupLock]);
+    LS.save({ students, byDate, vehicleNames, selectedDate, mode, groups, groupLock, rosterWidth, wbMargins, wbGaps });
+  }, [students, byDate, vehicleNames, selectedDate, mode, groups, groupLock, rosterWidth, wbMargins, wbGaps]);
 
   const dayData = byDate[selectedDate] ?? { go: emptyVehicleMap(), back: emptyVehicleMap() };
   const vehicles = mode === "go" ? dayData.go : dayData.back;
@@ -316,60 +345,41 @@ export default function App() {
     return out;
   }
 
-  // ---- OCR（β）：前処理 → Tesseract(動的) → ゆるいパース
+  // ---- OCR（β）：行解析（従来の簡易取込）
   async function importFromImage(file) {
     setOcrBusy(true);
-    setOcrLog("画像の前処理…");
+    setOcrLog("前処理…");
     try {
-      const processed = await preprocessImage(file);
-
-      setOcrLog("OCRエンジン読込中…");
+      const processed = await preprocessImageBlob(file);
+      setOcrLog("OCR読込…");
       const { default: Tesseract } = await import("tesseract.js");
-
       setOcrLog("解析中…");
       const { data } = await Tesseract.recognize(processed, "jpn", {
-        // 文字のホワイトリスト（必要に応じて増やす）
         tessedit_char_whitelist:
           "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789一二三四五六七八九十〇零号車行帰名・、,-:： 　"
       });
-
       const text = data?.text ?? "";
-      setOcrLog("取り込み中…");
-
-      // 行ごとに「車X: 名前 名前...」などを抽出
+      setOcrLog("取込中…");
       const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-
       const nameToId = new Map(students.map(s => [s.name, s.id]));
       const nextStudents = [...students];
-
       updateVehicles(prev => {
         const copy = clone(prev);
-        // 車ごとの上書きを想定：該当行があった車は一度空にする
         const touched = new Set();
-
         for (const line of lines) {
-          // 車の識別: 「車2」「2号車」「車 3」など
           const m = line.match(/(?:車\s*(\d+)|(\d+)号車)/);
           let carIdx = null;
-          if (m) { carIdx = parseInt(m[1] || m[2], 10); }
-
-          // 「:」以降や “車X” の右側を「名前候補」とみなす
+          if (m) carIdx = parseInt(m[1] || m[2], 10);
           let namesPart = line;
           if (/:|：/.test(line)) namesPart = line.split(/:|：/).slice(1).join(" ");
           namesPart = namesPart.replace(/(?:車\s*\d+|\d+号車)/g, "");
           const names = namesPart.split(/[,\s、・]+/).map(s => s.trim()).filter(Boolean);
-
           if (carIdx && carIdx >= 1 && carIdx <= 8 && names.length) {
             const vid = `v${carIdx}`;
             if (!touched.has(vid)) { copy[vid] = []; touched.add(vid); }
             for (const nm of names) {
-              if (!nameToId.has(nm)) {
-                const id = uid();
-                nameToId.set(nm, id);
-                nextStudents.push({ id, name: nm });
-              }
+              if (!nameToId.has(nm)) { const id = uid(); nameToId.set(nm, id); nextStudents.push({ id, name: nm }); }
               const id = nameToId.get(nm);
-              // 他車から同名を除去して、この車に入れる
               for (const k of Object.keys(copy)) copy[k] = copy[k].filter(a => a.studentId !== id);
               copy[vid].push({ studentId: id, pickup: "" });
             }
@@ -378,13 +388,95 @@ export default function App() {
         setStudents(nextStudents);
         return copy;
       });
-
-      setOcrLog("完了しました。");
+      setOcrLog("完了");
     } catch (e) {
-      console.error(e);
-      setOcrLog("OCRに失敗しました。照明・解像度・傾き等を調整してください。");
+      console.error(e); setOcrLog("OCR失敗");
     } finally {
       setTimeout(() => setOcrBusy(false), 600);
+    }
+  }
+
+  // ---- ホワイトボード領域指定 OCR（8車グリッド）
+  async function wbRunImport() {
+    if (!wbImage) return;
+    setOcrBusy(true);
+    setOcrLog("ホワイトボード画像解析…");
+
+    try {
+      // 元画像サイズ取得
+      const img = new Image();
+      const url = URL.createObjectURL(wbImage);
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+      const W = img.naturalWidth, H = img.naturalHeight;
+      URL.revokeObjectURL(url);
+
+      // マージン・ギャップ（%）から8セル（4x2）座標を算出
+      const leftPx = (wbMargins.left / 100) * W;
+      const rightPx = (wbMargins.right / 100) * W;
+      const topPx = (wbMargins.top / 100) * H;
+      const bottomPx = (wbMargins.bottom / 100) * H;
+      const gridW = W - leftPx - rightPx;
+      const gridH = H - topPx - bottomPx;
+      const colGapPx = (wbGaps.col / 100) * gridW;
+      const rowGapPx = (wbGaps.row / 100) * gridH;
+
+      const cellW = (gridW - colGapPx * 3) / 4;
+      const cellH = (gridH - rowGapPx * 1) / 2;
+
+      const cells = [];
+      for (let r = 0; r < 2; r++) {
+        for (let c = 0; c < 4; c++) {
+          const x = Math.round(leftPx + c * (cellW + colGapPx));
+          const y = Math.round(topPx + r * (cellH + rowGapPx));
+          cells.push({ x, y, w: Math.round(cellW), h: Math.round(cellH) });
+        }
+      }
+
+      // 各セルを切り出し → 前処理 → OCR → v1..v8に順に割当
+      const { default: Tesseract } = await import("tesseract.js");
+      const nameToId = new Map(students.map(s => [s.name, s.id]));
+      const nextStudents = [...students];
+
+      updateVehicles(prev => {
+        const copy = clone(prev);
+        // 一旦全車クリア（上書き想定）
+        for (const vid of Object.keys(copy)) copy[vid] = [];
+
+        return copy;
+      });
+
+      for (let i = 0; i < cells.length; i++) {
+        const crop = await cropBlob(wbImage, cells[i]);
+        const pre = await preprocessImageBlob(crop);
+        const { data } = await Tesseract.recognize(pre, "jpn", {
+          tessedit_char_whitelist:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789一二三四五六七八九十〇零号車行帰名・、,-:： 　"
+        });
+        const text = (data?.text ?? "").replace(/\s+/g, " ");
+        // セル内の名前候補（区切り：空白/読点/中黒など）
+        const names = text.split(/[,\s、・]+/).map(s => s.trim()).filter(Boolean);
+
+        updateVehicles(prev => {
+          const copy = clone(prev);
+          const vid = `v${i + 1}`; // 左上→右、次の行の左→右
+          for (const nm of names) {
+            if (!nm) continue;
+            if (!nameToId.has(nm)) { const id = uid(); nameToId.set(nm, id); nextStudents.push({ id, name: nm }); }
+            const id = nameToId.get(nm);
+            for (const k of Object.keys(copy)) copy[k] = copy[k].filter(a => a.studentId !== id);
+            copy[vid].push({ studentId: id, pickup: "" });
+          }
+          return copy;
+        });
+      }
+      setStudents(nextStudents);
+      setOcrLog("ホワイトボード取り込み完了");
+      setWbOpen(false);
+    } catch (e) {
+      console.error(e);
+      setOcrLog("取り込み失敗。マージン/ギャップを調整して再試行してください。");
+    } finally {
+      setTimeout(() => setOcrBusy(false), 800);
     }
   }
 
@@ -397,6 +489,7 @@ export default function App() {
     setMode("go");
     setGroups(DEFAULT_GROUPS);
     setGroupLock(true);
+    setRosterWidth(360);
   }
   function printView() { window.print(); }
 
@@ -406,7 +499,7 @@ export default function App() {
       {/* ヘッダ */}
       <div className="flex items-center justify-between px-3 py-2 border-b bg-white">
         <div className="flex items-center gap-2">
-          <h1 className="text-lg font-semibold">送迎割当（所属色固定 / 日別 / OCRβ）</h1>
+          <h1 className="text-lg font-semibold">送迎割当（名簿幅調整 / ホワイトボード取込β）</h1>
           <div className="flex rounded-xl border overflow-hidden">
             <button className={`px-3 py-1.5 text-sm ${mode === "go" ? "bg-blue-600 text-white" : "bg-white"}`} onClick={() => setMode("go")}>行き</button>
             <button className={`px-3 py-1.5 text-sm ${mode === "back" ? "bg-blue-600 text-white" : "bg-white"}`} onClick={() => setMode("back")}>帰り</button>
@@ -417,9 +510,10 @@ export default function App() {
           <label className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300 cursor-pointer">CSV入力
             <input type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files && importCSV(e.target.files[0])} />
           </label>
-          <label className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300 cursor-pointer">画像から（β）
+          <label className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300 cursor-pointer">画像（行解析β）
             <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files && importFromImage(e.target.files[0])} />
           </label>
+          <button className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300" onClick={() => setWbOpen(true)}>ホワイトボードから</button>
           <button className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300" onClick={() => setOpenSettings(true)}>設定</button>
           <button className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300" onClick={printView}>印刷</button>
           <button className="px-3 py-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600" onClick={resetAll}>初期化</button>
@@ -452,17 +546,16 @@ export default function App() {
         <button className="px-2 py-1 rounded border" onClick={() => setSelectedDate(d => shiftDateStr(d, 1))}>→</button>
       </div>
 
-      {/* レイアウト */}
-      <div className="grid grid-cols-[360px_1fr] h-[calc(100vh-96px)]">
-        {/* 名簿 */}
-        <div className="border-r bg-white h-full flex flex-col">
+      {/* レイアウト：名簿幅を state で制御＋スプリッター */}
+      <div className="h-[calc(100vh-96px)] w-full relative flex overflow-hidden">
+        {/* 名簿パネル */}
+        <div className="bg-white border-r h-full flex flex-col" style={{ width: Math.max(240, Math.min(560, rosterWidth)) }}>
           <div className="p-3 border-b">
             <div className="text-sm font-medium mb-2">名簿に追加</div>
             <div className="flex gap-2">
               <input className="flex-1 px-3 py-2 rounded-xl border text-base" placeholder="氏名"
                 value={newName} onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && addStudent()} />
-              {/* 所属：ロック中はセレクト限定、解除で自由入力 */}
               {groupLock ? (
                 <select className="px-2 py-2 rounded-xl border w-28" value={newGroup} onChange={(e) => setNewGroup(e.target.value)}>
                   {groups.map(g => <option key={g.name} value={g.name}>{g.name}</option>)}
@@ -539,8 +632,24 @@ export default function App() {
           </div>
         </div>
 
+        {/* スプリッター */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          className={`w-1 cursor-col-resize bg-gray-200 ${resizing ? "bg-blue-300" : ""}`}
+          onPointerDown={(e) => { setResizing(true); (e.target).setPointerCapture?.(e.pointerId); }}
+          onPointerMove={(e) => {
+            if (!resizing) return;
+            setRosterWidth(w => {
+              const next = Math.round(e.clientX); // 左端からのpx
+              return Math.max(240, Math.min(560, next));
+            });
+          }}
+          onPointerUp={() => setResizing(false)}
+        />
+
         {/* 右：8車グリッド */}
-        <div className="p-3 h-full">
+        <div className="p-3 h-full flex-1 min-w-0">
           <div className="grid grid-cols-4 grid-rows-2 gap-3 h-full">
             {VEHICLE_IDS.map((vid, idx) => (
               <div
@@ -636,6 +745,63 @@ export default function App() {
         </div>
       )}
 
+      {/* ホワイトボード取り込みモーダル */}
+      {wbOpen && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setWbOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-xl w-[920px] max-w-[95vw] p-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold">ホワイトボードから取り込み（8枠グリッド）</h2>
+              <button className="px-3 py-1.5 rounded border" onClick={() => setWbOpen(false)}>閉じる</button>
+            </div>
+
+            {!wbImage ? (
+              <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-100 cursor-pointer">
+                画像を選択
+                <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files && setWbImage(e.target.files[0])} />
+              </label>
+            ) : (
+              <>
+                <div className="grid grid-cols-[1fr_280px] gap-4">
+                  {/* 画像＋グリッドオーバーレイ（プレビュー用） */}
+                  <WhiteboardPreview blob={wbImage} margins={wbMargins} gaps={wbGaps} />
+
+                  {/* 調整パネル */}
+                  <div className="space-y-3">
+                    <div className="text-sm text-gray-600">マージン（%）</div>
+                    {["top","left","right","bottom"].map(k=>(
+                      <div key={k} className="flex items-center gap-2">
+                        <label className="w-16 text-sm">{k}</label>
+                        <input type="range" min={0} max={20} step={0.5}
+                          value={wbMargins[k]} onChange={e=> setWbMargins(v=> ({...v, [k]: Number(e.target.value)}))} />
+                        <span className="w-10 text-right text-sm">{wbMargins[k]}</span>
+                      </div>
+                    ))}
+                    <div className="text-sm text-gray-600 mt-2">ギャップ（%）</div>
+                    {["col","row"].map(k=>(
+                      <div key={k} className="flex items-center gap-2">
+                        <label className="w-16 text-sm">{k}</label>
+                        <input type="range" min={0} max={10} step={0.5}
+                          value={wbGaps[k]} onChange={e=> setWbGaps(v=> ({...v, [k]: Number(e.target.value)}))} />
+                        <span className="w-10 text-right text-sm">{wbGaps[k]}</span>
+                      </div>
+                    ))}
+
+                    <div className="pt-2 flex gap-2">
+                      <button className="px-3 py-2 rounded bg-gray-200" onClick={()=> setWbImage(null)}>別の画像にする</button>
+                      <button className="px-3 py-2 rounded bg-blue-600 text-white" onClick={wbRunImport}>この設定で取り込む</button>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      ヒント: 4×2の枠がホワイトボードの「8車の区画」に重なるように、マージンとギャップを調整してください。
+                      各枠の中に書かれた氏名が、そのまま v1〜v8（左上から右へ/次の行へ）に割り当たります。
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ドラッグ中のゴースト */}
       {draggingId && (
         <div style={{ position: "fixed", left: dragPos.x + 12, top: dragPos.y + 12, pointerEvents: "none", zIndex: 50 }}>
@@ -647,6 +813,59 @@ export default function App() {
 
       {/* 印刷スタイル */}
       <style>{`@media print { body,html,#root{height:auto} .grid{gap:8px!important} input,button,select{border:none!important} }`}</style>
+    </div>
+  );
+}
+
+/* 画像プレビュー＋4x2グリッドオーバーレイ */
+function WhiteboardPreview({ blob, margins, gaps }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    const u = URL.createObjectURL(blob);
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [blob]);
+
+  return (
+    <div className="relative w-full h-[60vh] min-h-[360px] border rounded-xl overflow-hidden bg-black/5">
+      {url && (
+        <>
+          <img src={url} alt="whiteboard" className="w-full h-full object-contain select-none pointer-events-none" />
+          {/* オーバーレイ */}
+          <div className="absolute inset-0 pointer-events-none">
+            <GridOverlay margins={margins} gaps={gaps} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function GridOverlay({ margins, gaps }) {
+  return (
+    <div className="absolute inset-0">
+      <div
+        className="absolute border-2 border-blue-400/60 rounded"
+        style={{
+          top: `${margins.top}%`,
+          left: `${margins.left}%`,
+          right: `${margins.right}%`,
+          bottom: `${margins.bottom}%`,
+        }}
+      >
+        {/* 4x2 セル */}
+        <div className="w-full h-full grid" style={{
+          gridTemplateColumns: "1fr 1fr 1fr 1fr",
+          gridTemplateRows: "1fr 1fr",
+          columnGap: `${gaps.col}%`,
+          rowGap: `${gaps.row}%`,
+          padding: 2
+        }}>
+          {Array.from({length:8},(_,i)=>(
+            <div key={i} className="border-2 border-yellow-400/70 rounded-md"></div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
