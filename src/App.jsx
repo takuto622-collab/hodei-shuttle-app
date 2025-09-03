@@ -1,288 +1,337 @@
-import React, { useMemo, useRef, useState, useEffect } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/** @typedef {{ id: string; name: string }} Student */
-/** @typedef {{ studentId: string; pickup: string; drop: string }} Assignment */
-/** @typedef {{ [vehicleId: string]: Assignment[] }} VehicleMap */
-
+/** @typedef {{ id: string; name: string; group?: string }} Student */
+/** @typedef {{ studentId: string; pickup: string }} Assignment */
 const VEHICLE_COUNT = 8;
 const VEHICLE_IDS = Array.from({ length: VEHICLE_COUNT }, (_, i) => `v${i + 1}`);
-const STORAGE_KEY = "dispatch-mvp-v3";
+const STORAGE_KEY = "dispatch-mvp-v4"; // v4: date別&所属カラー&降車削除
 
-function uid() { return Math.random().toString(36).slice(2, 9); }
-function loadState() { try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; } }
-function saveState(state) { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+// ---- 日付ヘルパ
+function fmt(d){ return d.toISOString().slice(0,10); }
+function todayStr(){ return fmt(new Date()); }
+function clampDateStr(s){
+  const base = new Date(); base.setHours(0,0,0,0);
+  const min = new Date(base); min.setDate(base.getDate()-10);
+  const max = new Date(base); max.setDate(base.getDate()+10);
+  const d = new Date(s);
+  return fmt(new Date(Math.min(Math.max(d.getTime(), min.getTime()), max.getTime())));
+}
+function shiftDateStr(s, delta){
+  const d = new Date(s); d.setDate(d.getDate()+delta); return clampDateStr(fmt(d));
+}
 
-export default function App() {
-  const persisted = useMemo(() => loadState(), []);
+// ---- 永続化
+function loadState(){
+  try{ const raw = localStorage.getItem(STORAGE_KEY); return raw? JSON.parse(raw): null; }catch{return null}
+}
+function saveState(state){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
 
-  const [students, setStudents] = useState(
+// ---- 所属カラー（グループ名→色）。必要なら追加/変更OK
+const GROUP_COLOR_PRESET = {
+  "赤":   "#ef4444",
+  "青":   "#3b82f6",
+  "緑":   "#22c55e",
+  "橙":   "#f59e0b",
+  "紫":   "#8b5cf6",
+  "灰":   "#6b7280",
+};
+function colorForGroup(group){
+  if(!group) return "#9ca3af";
+  if (GROUP_COLOR_PRESET[group]) return GROUP_COLOR_PRESET[group];
+  // 未定義名はハッシュで色を作る（簡易）
+  let h=0; for(const c of group) h=(h*31 + c.charCodeAt(0))>>>0;
+  const hue = h % 360;
+  return `hsl(${hue} 70% 55%)`;
+}
+
+// ---- 空の配車
+function emptyVehicleMap(){ return Object.fromEntries(VEHICLE_IDS.map(id=>[id,/** @type {Assignment[]} */([])])); }
+
+export default function App(){
+  const persisted = loadState();
+
+  // 名簿（全日共通）
+  const [students, setStudents] = useState/** @type {Student[]} */(
     persisted?.students ?? [
-      { id: uid(), name: "山田 太郎" },
-      { id: uid(), name: "佐藤 花子" },
-      { id: uid(), name: "鈴木 次郎" },
-      { id: uid(), name: "田中 三郎" },
+      { id: uid(), name: "山田 太郎", group: "赤" },
+      { id: uid(), name: "佐藤 花子", group: "青" },
+      { id: uid(), name: "鈴木 次郎", group: "緑" },
+      { id: uid(), name: "田中 三郎", group: "灰"  },
     ]
   );
 
-  const [vehiclesGo, setVehiclesGo] = useState(
-    persisted?.vehiclesGo ?? Object.fromEntries(VEHICLE_IDS.map((id) => [id, []]))
+  // 日付 → { go: VehicleMap, back: VehicleMap }
+  const [byDate, setByDate] = useState/** @type {Record<string,{go:any,back:any}>} */(
+    persisted?.byDate ?? { [todayStr()]: { go: emptyVehicleMap(), back: emptyVehicleMap() } }
   );
-  const [vehiclesBack, setVehiclesBack] = useState(
-    persisted?.vehiclesBack ?? Object.fromEntries(VEHICLE_IDS.map((id) => [id, []]))
-  );
-  const [mode, setMode] = useState(persisted?.mode ?? "go"); // 'go' | 'back'
+  const [selectedDate, setSelectedDate] = useState(persisted?.selectedDate ? clampDateStr(persisted.selectedDate) : todayStr());
+  const [mode, setMode] = useState/** @type {"go"|"back"} */(persisted?.mode ?? "go");
 
-  const vehicles = mode === "go" ? vehiclesGo : vehiclesBack;
-  const setVehicles = mode === "go" ? setVehiclesGo : setVehiclesBack;
-
+  // 車名
   const [vehicleNames, setVehicleNames] = useState(
-    persisted?.vehicleNames ?? Object.fromEntries(VEHICLE_IDS.map((id, i) => [id, `車${i + 1}`]))
+    persisted?.vehicleNames ?? Object.fromEntries(VEHICLE_IDS.map((id,i)=>[id,`車${i+1}`]))
   );
 
+  // 名簿追加
   const [newName, setNewName] = useState("");
+  const [newGroup, setNewGroup] = useState("赤");
 
-  // iPad向けドラッグ（Pointer Events）
-  const [draggingId, setDraggingId] = useState(null);
-  const [dragPos, setDragPos] = useState({ x: 0, y: 0 });
-  const [hoverVehicle, setHoverVehicle] = useState(null);
-  const vehicleRefs = useRef(Object.fromEntries(VEHICLE_IDS.map((id) => [id, React.createRef()])));
+  // iPad向けPointer DnD
+  const [draggingId, setDraggingId] = useState/** @type {string|null} */(null);
+  const [dragPos, setDragPos] = useState({x:0,y:0});
+  const [hoverVehicle, setHoverVehicle] = useState/** @type {string|null} */(null);
+  const vehicleRefs = useRef(Object.fromEntries(VEHICLE_IDS.map(id=>[id, React.createRef()])));
 
-  useEffect(() => {
-    saveState({ students, vehiclesGo, vehiclesBack, vehicleNames, mode });
-  }, [students, vehiclesGo, vehiclesBack, vehicleNames, mode]);
+  // 選択日の確保
+  useEffect(()=>{
+    setByDate(prev=>{
+      if (prev[selectedDate]) return prev;
+      return { ...prev, [selectedDate]: { go: emptyVehicleMap(), back: emptyVehicleMap() } };
+    });
+  },[selectedDate]);
 
-  const unassignedIds = useMemo(() => {
-    const assigned = new Set(Object.values(vehicles).flatMap((arr) => arr.map((a) => a.studentId)));
-    return students.filter((s) => !assigned.has(s.id)).map((s) => s.id);
-  }, [students, vehicles]);
+  // 保存
+  useEffect(()=>{
+    saveState({ students, byDate, vehicleNames, selectedDate, mode });
+  },[students, byDate, vehicleNames, selectedDate, mode]);
 
-  const byId = useMemo(() => Object.fromEntries(students.map((s) => [s.id, s])), [students]);
+  const dayData = byDate[selectedDate] ?? { go: emptyVehicleMap(), back: emptyVehicleMap() };
+  const vehicles = mode==="go" ? dayData.go : dayData.back;
 
-  function updateTime(vehicleId, studentId, field, value) {
-    setVehicles((prev) => {
+  // 利便用マップ
+  const byId = useMemo(()=>Object.fromEntries(students.map(s=>[s.id,s])),[students]);
+
+  // 未割当
+  const unassignedIds = useMemo(()=>{
+    const assigned = new Set(Object.values(vehicles).flatMap(arr=>arr.map(a=>a.studentId)));
+    return students.filter(s=>!assigned.has(s.id)).map(s=>s.id);
+  },[students, vehicles]);
+
+  function setVehicles(mutator){
+    setByDate(prev=>{
       const copy = structuredClone(prev);
-      const arr = copy[vehicleId];
-      const idx = arr.findIndex((a) => a.studentId === studentId);
-      if (idx >= 0) arr[idx][field] = value;
+      if (!copy[selectedDate]) copy[selectedDate] = { go: emptyVehicleMap(), back: emptyVehicleMap() };
+      const target = mode==="go" ? copy[selectedDate].go : copy[selectedDate].back;
+      const next = mutator(target);
+      if (mode==="go") copy[selectedDate].go = next;
+      else copy[selectedDate].back = next;
       return copy;
     });
   }
 
-  function addStudent() {
-    const name = newName.trim();
-    if (!name) return;
-    setStudents((s) => [...s, { id: uid(), name }]);
+  function updateTime(vehicleId, studentId, value){
+    setVehicles(prev=>{
+      const copy = structuredClone(prev);
+      const arr = copy[vehicleId];
+      const idx = arr.findIndex(a=>a.studentId===studentId);
+      if (idx>=0) arr[idx].pickup = value;
+      return copy;
+    });
+  }
+
+  function addStudent(){
+    const name = newName.trim(); if(!name) return;
+    setStudents(s=>[...s, { id: uid(), name, group: newGroup || "灰" }]);
     setNewName("");
   }
 
-  function removeStudent(id) {
-    setStudents((s) => s.filter((x) => x.id !== id));
-    setVehiclesGo((prev) => {
-      const copy = structuredClone(prev);
-      for (const vid of Object.keys(copy)) copy[vid] = copy[vid].filter((a) => a.studentId !== id);
-      return copy;
+  function setStudentGroup(id, group){
+    setStudents(prev=> prev.map(s=> s.id===id ? {...s, group} : s));
+  }
+
+  function removeStudent(id){
+    setStudents(s=>s.filter(x=>x.id!==id));
+    // 全日からも割当解除
+    setByDate(prev=>{
+      const cp = structuredClone(prev);
+      for (const d of Object.keys(cp)){
+        for (const bin of ["go","back"]){
+          for (const vid of Object.keys(cp[d][bin])){
+            cp[d][bin][vid] = cp[d][bin][vid].filter(a=>a.studentId!==id);
+          }
+        }
+      }
+      return cp;
     });
-    setVehiclesBack((prev) => {
+  }
+
+  function unassignCurrentDay(id){
+    setVehicles(prev=>{
       const copy = structuredClone(prev);
-      for (const vid of Object.keys(copy)) copy[vid] = copy[vid].filter((a) => a.studentId !== id);
+      for(const vid of Object.keys(copy)) copy[vid] = copy[vid].filter(a=>a.studentId!==id);
       return copy;
     });
   }
 
-  function unassign(studentId) {
-    const setter = mode === "go" ? setVehiclesGo : setVehiclesBack;
-    setter((prev) => {
-      const copy = structuredClone(prev);
-      for (const vid of Object.keys(copy)) copy[vid] = copy[vid].filter((a) => a.studentId !== studentId);
-      return copy;
-    });
-  }
-
-  // ---- CSV出力
-  function exportCSV() {
-    const rows = [["便", "車両", "氏名", "ピックアップ", "降車"]];
-    const currentVehicles = mode === "go" ? vehiclesGo : vehiclesBack;
-    for (const vid of VEHICLE_IDS) {
-      for (const a of currentVehicles[vid]) {
+  // CSV 出力（列：日付,便,車両,氏名,所属,ピックアップ）
+  function exportCSV(){
+    const rows = [["日付","便","車両","氏名","所属","ピックアップ"]];
+    const current = mode==="go" ? dayData.go : dayData.back;
+    for (const vid of VEHICLE_IDS){
+      for (const a of current[vid]){
         rows.push([
-          mode === "go" ? "行き" : "帰り",
+          selectedDate,
+          mode==="go"?"行き":"帰り",
           vehicleNames[vid],
           byId[a.studentId]?.name ?? "",
-          a.pickup,
-          a.drop,
+          byId[a.studentId]?.group ?? "",
+          a.pickup ?? "",
         ]);
       }
     }
-    const csv = rows
-      .map((r) => r.map((x) => `"${(x ?? "").replaceAll('"', '""')}"`).join(","))
-      .join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `送迎割当_${mode}_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const csv = rows.map(r=>r.map(x=>`"${String(x??"").replaceAll('"','""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"}); const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download=`送迎_${selectedDate}_${mode}.csv`; a.click(); URL.revokeObjectURL(url);
   }
 
-  // ---- CSVテンプレDL
-  function downloadTemplate() {
-    const rows = [
-      ["便", "車両", "氏名", "ピックアップ", "降車"],
-      [mode === "go" ? "行き" : "帰り", "車1", "例：山田太郎", "15:30", "16:10"],
-    ];
-    const csv = rows.map((r) => r.join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "テンプレート.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  // ---- CSV取り込み
-  function importCSV(file) {
+  // CSV 入力：
+  // 形式A: 日付,便,車両,氏名,所属,ピックアップ
+  // 形式B: 車両,氏名,所属,ピックアップ（現在の selectedDate & mode で読み込む）
+  function importCSV(file){
     const reader = new FileReader();
     reader.onload = () => {
       const text = String(reader.result ?? "");
       const lines = text.split(/\r?\n/).filter(Boolean);
       if (!lines.length) return;
-
       const header = lines[0].split(",");
-      const hasBin = /便/.test(header[0]);
-      const data = hasBin ? lines.slice(1) : lines;
+      const hasDate = /日付/.test(header[0]);
+      const hasBin  = hasDate ? /便/.test(header[1]) : false;
+      const data = (hasDate || /車両/.test(header[0])) ? lines.slice(1) : lines;
 
-      const nameToId = new Map(students.map((s) => [s.name, s.id]));
-      const newVehiclesGo = structuredClone(vehiclesGo);
-      const newVehiclesBack = structuredClone(vehiclesBack);
-      const newVehicleNames = { ...vehicleNames };
-      const newStudents = [...students];
+      const nameToId = new Map(students.map(s=>[s.name, s.id]));
+      // 編集用コピー
+      const nextByDate = structuredClone(byDate);
+      const nextVehicleNames = { ...vehicleNames };
+      const nextStudents = [...students];
 
-      for (const line of data) {
-        const cols = parseCsvLine(line);
-        if (!cols) continue;
-
-        const [binMaybe, carMaybe, nameMaybe, pickupMaybe, dropMaybe] = cols;
-        const bin = hasBin ? binMaybe : (mode === "go" ? "行き" : "帰り");
-        const car = hasBin ? carMaybe : binMaybe;         // ヘッダ無しCSVのとき先頭を車名とみなす
-        const name = hasBin ? nameMaybe : carMaybe;
-        const pickup = hasBin ? pickupMaybe : nameMaybe;
-        const drop = hasBin ? dropMaybe : pickupMaybe;
+      for(const line of data){
+        const cols = parseCsvLine(line); if (!cols) continue;
+        let dStr, binLabel, car, name, group, pickup;
+        if (hasDate){
+          [dStr, binLabel, car, name, group, pickup] = cols;
+        } else {
+          // B形式
+          [car, name, group, pickup] = cols;
+          dStr = selectedDate;
+          binLabel = mode==="go" ? "行き":"帰り";
+        }
+        if(!dStr) dStr = selectedDate;
+        dStr = clampDateStr(dStr);
+        if (!nextByDate[dStr]) nextByDate[dStr] = { go: emptyVehicleMap(), back: emptyVehicleMap() };
 
         if (!name) continue;
-
-        if (!nameToId.has(name)) {
-          const id = uid();
-          nameToId.set(name, id);
-          newStudents.push({ id, name });
-        }
+        if (!nameToId.has(name)) { const id = uid(); nameToId.set(name,id); nextStudents.push({ id, name, group: group || "" }); }
         const id = nameToId.get(name);
 
-        // 車名 → 内部ID
-        let vid = Object.keys(newVehicleNames).find((k) => newVehicleNames[k] === car);
-        if (!vid) {
-          vid = VEHICLE_IDS.find((x) => newVehicleNames[x].startsWith("車")) ?? VEHICLE_IDS[0];
-          newVehicleNames[vid] = car || newVehicleNames[vid];
+        // 学籍情報（所属）も更新（空じゃなければ）
+        if (group) {
+          const idx = nextStudents.findIndex(s=>s.id===id);
+          if (idx>=0) nextStudents[idx].group = group;
         }
 
-        const target = bin === "行き" ? newVehiclesGo : newVehiclesBack;
-        // 同じ児童の既存割当を一旦除去
-        for (const k of Object.keys(target)) {
-          target[k] = target[k].filter((a) => a.studentId !== id);
+        let vid = Object.keys(nextVehicleNames).find(k=>nextVehicleNames[k]===car);
+        if (!vid){ vid = VEHICLE_IDS.find(x=> nextVehicleNames[x].startsWith("車")) ?? VEHICLE_IDS[0]; nextVehicleNames[vid] = car || nextVehicleNames[vid]; }
+
+        const binKey = (binLabel==="行き") ? "go":"back";
+        // 重複排除して追加
+        for(const k of Object.keys(nextByDate[dStr][binKey])){
+          nextByDate[dStr][binKey][k] = nextByDate[dStr][binKey][k].filter(a=>a.studentId!==id);
         }
-        // 追加
-        target[vid].push({ studentId: id, pickup: pickup ?? "", drop: drop ?? "" });
+        nextByDate[dStr][binKey][vid].push({ studentId: id, pickup: pickup ?? "" });
       }
 
-      setStudents(newStudents);
-      setVehicleNames(newVehicleNames);
-      setVehiclesGo(newVehiclesGo);
-      setVehiclesBack(newVehiclesBack);
+      setStudents(nextStudents);
+      setVehicleNames(nextVehicleNames);
+      setByDate(nextByDate);
     };
     reader.readAsText(file, "utf-8");
   }
 
-  // 簡易CSVパーサ（ダブルクオート対応）
-  function parseCsvLine(line) {
-    const out = [];
-    let cur = "";
-    let inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (inQ) {
-        if (ch === '"') {
-          if (line[i + 1] === '"') { cur += '"'; i++; }
-          else { inQ = false; }
-        } else {
-          cur += ch;
-        }
+  function parseCsvLine(line){
+    const out=[], s=line; let cur="", inQ=false;
+    for(let i=0;i<s.length;i++){
+      const ch=s[i];
+      if(inQ){
+        if(ch===`"`){ if(s[i+1]===`"`){ cur+=`"`; i++; } else { inQ=false; } }
+        else cur+=ch;
       } else {
-        if (ch === ",") { out.push(cur); cur = ""; }
-        else if (ch === '"') { inQ = true; }
-        else { cur += ch; }
+        if(ch===`,`) { out.push(cur); cur=""; }
+        else if(ch===`"`) inQ=true;
+        else cur+=ch;
       }
     }
-    out.push(cur);
-    return out;
+    out.push(cur); return out;
   }
 
-  function resetAll() {
-    if (!confirm("すべて初期化しますか？")) return;
-    setVehiclesGo(Object.fromEntries(VEHICLE_IDS.map((id) => [id, []])));
-    setVehiclesBack(Object.fromEntries(VEHICLE_IDS.map((id) => [id, []])));
+  function resetAll(){
+    if(!confirm("すべて初期化しますか？")) return;
     setStudents([]);
-    setVehicleNames(Object.fromEntries(VEHICLE_IDS.map((id, i) => [id, `車${i + 1}`])));
+    setByDate({ [todayStr()]: { go: emptyVehicleMap(), back: emptyVehicleMap() } });
+    setVehicleNames(Object.fromEntries(VEHICLE_IDS.map((id,i)=>[id,`車${i+1}`])));
+    setSelectedDate(todayStr());
     setMode("go");
   }
+  function printView(){ window.print(); }
 
-  function printView() { window.print(); }
-
+  // UI ----
   return (
     <div className="h-screen w-screen overflow-hidden bg-gray-50 text-gray-900 touch-manipulation select-none">
       {/* ヘッダ */}
-      <div className="flex items-center justify-between px-4 py-2 border-b bg-white">
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold">送迎割当（8車）</h1>
+      <div className="flex items-center justify-between px-3 py-2 border-b bg-white">
+        <div className="flex items-center gap-2">
+          <h1 className="text-lg font-semibold">送迎割当（8車 / 所属色 / 日別）</h1>
           <div className="flex rounded-xl border overflow-hidden">
-            <button
-              className={`px-3 py-1.5 text-sm ${mode === "go" ? "bg-blue-600 text-white" : "bg-white"}`}
-              onClick={() => setMode("go")}
-              title="行き便"
-            >行き</button>
-            <button
-              className={`px-3 py-1.5 text-sm ${mode === "back" ? "bg-blue-600 text-white" : "bg-white"}`}
-              onClick={() => setMode("back")}
-              title="帰り便"
-            >帰り</button>
+            <button className={`px-3 py-1.5 text-sm ${mode==="go"?"bg-blue-600 text-white":"bg-white"}`} onClick={()=>setMode("go")}>行き</button>
+            <button className={`px-3 py-1.5 text-sm ${mode==="back"?"bg-blue-600 text-white":"bg-white"}`} onClick={()=>setMode("back")}>帰り</button>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300" onClick={exportCSV}>CSV出力</button>
-          <label className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300 cursor-pointer">
-            CSV入力
-            <input type="file" accept=".csv" className="hidden" onChange={(e)=> e.target.files && importCSV(e.target.files[0])} />
+          <label className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300 cursor-pointer">CSV入力
+            <input type="file" accept=".csv" className="hidden" onChange={(e)=> e.target.files && importCSV(e.target.files[0])}/>
           </label>
-          <button className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300" onClick={downloadTemplate}>テンプレCSV</button>
           <button className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300" onClick={printView}>印刷</button>
           <button className="px-3 py-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600" onClick={resetAll}>初期化</button>
         </div>
       </div>
 
-      {/* 左：名簿 / 右：8車グリッド（ページは固定、高さ内で各車スクロール） */}
-      <div className="grid grid-cols-[320px_1fr] h-[calc(100vh-48px)]">
+      {/* 日付バー（今日±10日） */}
+      <div className="px-3 py-2 border-b bg-white flex items-center gap-2">
+        <button className="px-2 py-1 rounded border" onClick={()=>setSelectedDate(d=>shiftDateStr(d,-1))}>←</button>
+        <div className="flex-1 overflow-x-auto">
+          <div className="flex gap-1">
+            {Array.from({length:21},(_,i)=>{
+              const base = new Date(); base.setHours(0,0,0,0); base.setDate(base.getDate()-10+i);
+              const s = fmt(base);
+              const isToday = s===todayStr();
+              const isSel = s===selectedDate;
+              return (
+                <button key={s}
+                  onClick={()=>setSelectedDate(s)}
+                  className={`px-2 py-1 rounded-lg border whitespace-nowrap ${isSel?"bg-blue-600 text-white": "bg-white"} ${isToday && !isSel ? "border-blue-400":""}`}>
+                  {s.slice(5)}{isToday?"(今日)":""}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <button className="px-2 py-1 rounded border" onClick={()=>setSelectedDate(d=>shiftDateStr(d,1))}>→</button>
+      </div>
+
+      {/* レイアウト */}
+      <div className="grid grid-cols-[320px_1fr] h-[calc(100vh-96px)]">
         {/* 名簿 */}
         <div className="border-r bg-white h-full flex flex-col">
           <div className="p-3 border-b">
             <div className="text-sm font-medium mb-2">名簿に追加</div>
             <div className="flex gap-2">
-              <input
-                className="flex-1 px-3 py-2 rounded-xl border text-base"
-                placeholder="氏名を入力"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addStudent()}
-              />
+              <input className="flex-1 px-3 py-2 rounded-xl border text-base" placeholder="氏名"
+                value={newName} onChange={(e)=>setNewName(e.target.value)} onKeyDown={(e)=> e.key==="Enter" && addStudent()}/>
+              <select className="px-2 py-2 rounded-xl border" value={newGroup} onChange={(e)=>setNewGroup(e.target.value)}>
+                {Object.keys(GROUP_COLOR_PRESET).map(g=><option key={g} value={g}>{g}</option>)}
+              </select>
               <button className="px-3 py-2 rounded-xl bg-blue-600 text-white active:scale-95" onClick={addStudent}>追加</button>
             </div>
           </div>
@@ -290,101 +339,87 @@ export default function App() {
           <div className="p-3 flex-1 overflow-auto">
             <div className="text-sm text-gray-600 mb-2">未割当（長押し→ドラッグで車へ）</div>
             <div className="grid grid-cols-1 gap-2">
-              {students
-                .filter((s) => unassignedIds.includes(s.id))
-                .map((s) => (
-                  <div
-                    key={s.id}
-                    className={`px-3 py-3 rounded-2xl border bg-gray-50 ${draggingId===s.id? 'ring-2 ring-blue-400': ''}`}
-                    onPointerDown={(e)=>{ e.currentTarget.setPointerCapture?.(e.pointerId); setDraggingId(s.id); setDragPos({x:e.clientX,y:e.clientY}); }}
-                    onPointerMove={(e)=>{ if(!draggingId) return;
-                      const x=e.clientX,y=e.clientY; setDragPos({x,y});
-                      let over=null;
-                      for(const vid of VEHICLE_IDS){
-                        const el=vehicleRefs.current[vid]?.current; if(!el) continue;
-                        const r=el.getBoundingClientRect();
-                        if(x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom){ over=vid; break; }
-                      }
-                      setHoverVehicle(over);
-                    }}
-                    onPointerUp={()=>{ if(draggingId && hoverVehicle){
+              {students.filter(s=>unassignedIds.includes(s.id)).map(s=>(
+                <div key={s.id}
+                  className={`px-3 py-2 rounded-xl border bg-gray-50 ${draggingId===s.id?'ring-2 ring-blue-400':''}`}
+                  style={{borderLeft: `6px solid ${colorForGroup(s.group)}`}}
+                  onPointerDown={(e)=>{ e.currentTarget.setPointerCapture?.(e.pointerId); setDraggingId(s.id); setDragPos({x:e.clientX,y:e.clientY}); }}
+                  onPointerMove={(e)=>{ if(!draggingId) return; const x=e.clientX,y=e.clientY; setDragPos({x,y});
+                    let over=null; for(const vid of VEHICLE_IDS){ const el=vehicleRefs.current[vid]?.current; if(!el) continue;
+                      const r=el.getBoundingClientRect(); if(x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom){ over=vid; break; } }
+                    setHoverVehicle(over);
+                  }}
+                  onPointerUp={()=>{
+                    if(draggingId && hoverVehicle){
                       const id=draggingId;
                       setVehicles(prev=>{
                         const copy=structuredClone(prev);
-                        for(const vid of Object.keys(copy)) copy[vid]=copy[vid].filter(a=>a.studentId!==id);
-                        copy[hoverVehicle].push({studentId:id,pickup:"",drop:""});
+                        for(const vid of Object.keys(copy)) copy[vid] = copy[vid].filter(a=>a.studentId!==id);
+                        copy[hoverVehicle].push({ studentId:id, pickup:"" });
                         return copy;
                       });
                     }
-                    setDraggingId(null); setHoverVehicle(null); }}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-base">{s.name}</span>
-                      <button className="text-xs text-red-600 hover:underline" onClick={() => removeStudent(s.id)}>削除</button>
+                    setDraggingId(null); setHoverVehicle(null);
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full" style={{background: colorForGroup(s.group)}}/>
+                      <span className="text-sm">{s.name}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <select className="text-xs border rounded px-1 py-0.5" value={s.group ?? ""} onChange={(e)=>setStudentGroup(s.id, e.target.value)}>
+                        {Object.keys(GROUP_COLOR_PRESET).map(g=><option key={g} value={g}>{g}</option>)}
+                        <option value="">(未設定)</option>
+                      </select>
+                      <button className="text-xs text-red-600 hover:underline" onClick={()=>removeStudent(s.id)}>削除</button>
                     </div>
                   </div>
-                ))}
+                </div>
+              ))}
             </div>
           </div>
         </div>
 
-        {/* 右：車グリッド */}
+        {/* 右：8車グリッド（各車内スクロール） */}
         <div className="p-3 h-full">
           <div className="grid grid-cols-4 grid-rows-2 gap-3 h-full">
-            {VEHICLE_IDS.map((vid, idx) => (
-              <div
-                key={vid}
-                ref={vehicleRefs.current[vid]}
-                className={`rounded-2xl bg-white border flex flex-col overflow-hidden ${hoverVehicle===vid? 'ring-2 ring-blue-500':''}`}
-              >
-                {/* 車ヘッダ（名称編集可能） */}
+            {VEHICLE_IDS.map((vid, idx)=>(
+              <div key={vid} ref={vehicleRefs.current[vid]}
+                className={`rounded-2xl bg-white border flex flex-col overflow-hidden ${hoverVehicle===vid?'ring-2 ring-blue-500':''}`}>
                 <div className="px-3 py-2 border-b flex items-center gap-2 bg-gray-50">
-                  <input
-                    className="flex-1 bg-transparent font-medium text-sm px-2 py-1 rounded border"
-                    value={vehicleNames[vid]}
-                    onChange={(e) => setVehicleNames((v) => ({ ...v, [vid]: e.target.value }))}
-                  />
-                  <span className="text-[10px] text-gray-500">{idx + 1}/8</span>
+                  <input className="flex-1 bg-transparent font-medium text-sm px-2 py-1 rounded border"
+                    value={vehicleNames[vid]} onChange={(e)=>setVehicleNames(v=>({...v,[vid]:e.target.value}))}/>
+                  <span className="text-[10px] text-gray-500">{idx+1}/8</span>
                 </div>
 
-                {/* 児童カード領域 */}
                 <div className="flex-1 overflow-auto p-2">
-                  {vehicles[vid].length === 0 && (
+                  {vehicles[vid].length===0 && (
                     <div className="h-full w-full flex items-center justify-center text-xs text-gray-400 border border-dashed rounded-xl p-4">
                       未割当：ここにドロップ
                     </div>
                   )}
                   <div className="grid grid-cols-1 gap-2">
-                    {vehicles[vid].map((a) => (
-                      <div key={a.studentId} className="rounded-xl border px-3 py-2 bg-white">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="text-sm font-medium">{byId[a.studentId]?.name ?? "(不明)"}</div>
-                          <div className="flex items-center gap-2">
-                            <button className="text-xs text-gray-500 hover:underline" onClick={() => unassign(a.studentId)}>外す</button>
+                    {vehicles[vid].map(a=>{
+                      const s = byId[a.studentId];
+                      return (
+                        <div key={a.studentId} className="rounded-xl border px-3 py-2 bg-white" style={{borderLeft:`6px solid ${colorForGroup(s?.group)}`}}>
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{background: colorForGroup(s?.group)}}/>
+                              <div className="text-sm font-medium">{s?.name ?? "(不明)"}</div>
+                            </div>
+                            <button className="text-xs text-gray-500 hover:underline" onClick={()=>unassignCurrentDay(a.studentId)}>外す</button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="text-xs flex flex-col gap-1">
+                              <span className="text-gray-500">ピックアップ</span>
+                              <input type="time" className="px-2 py-1 rounded border" value={a.pickup} onChange={(e)=>updateTime(vid, a.studentId, e.target.value)} />
+                            </label>
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <label className="text-xs flex flex-col gap-1">
-                            <span className="text-gray-500">ピックアップ</span>
-                            <input
-                              type="time"
-                              className="px-2 py-1 rounded border"
-                              value={a.pickup}
-                              onChange={(e) => updateTime(vid, a.studentId, "pickup", e.target.value)}
-                            />
-                          </label>
-                          <label className="text-xs flex flex-col gap-1">
-                            <span className="text-gray-500">降車</span>
-                            <input
-                              type="time"
-                              className="px-2 py-1 rounded border"
-                              value={a.drop}
-                              onChange={(e) => updateTime(vid, a.studentId, "drop", e.target.value)}
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -395,13 +430,18 @@ export default function App() {
 
       {/* ドラッグ中のゴースト */}
       {draggingId && (
-        <div style={{ position: "fixed", left: dragPos.x + 12, top: dragPos.y + 12, pointerEvents: "none", zIndex: 50 }}>
-          <div className="px-3 py-2 rounded-2xl border shadow bg-white text-sm">{byId[draggingId]?.name}</div>
+        <div style={{ position:"fixed", left:dragPos.x+12, top:dragPos.y+12, pointerEvents:"none", zIndex:50 }}>
+          <div className="px-3 py-2 rounded-2xl border shadow bg-white text-sm">
+            {byId[draggingId]?.name}
+          </div>
         </div>
       )}
 
       {/* 印刷スタイル */}
-      <style>{`@media print { .no-print { display:none!important } body,html,#root { height:auto } .grid { gap:8px!important } input,button { border:none!important } }`}</style>
+      <style>{`@media print { body,html,#root{height:auto} .grid{gap:8px!important} input,button,select{border:none!important} }`}</style>
     </div>
   );
 }
+
+// ---- util
+function uid(){ return Math.random().toString(36).slice(2,9); }
