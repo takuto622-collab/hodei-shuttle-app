@@ -733,6 +733,33 @@ export default function App() {
             <div className="text-sm text-gray-600 mb-2">所属名と色を施設仕様に合わせて固定できます（名簿・配車表示に反映）。</div>
             <div className="space-y-2 max-h-[50vh] overflow-auto pr-1">
               {groups.map((g, i) => (
+           {/* ここから：車の有効/無効 */}
+<div className="mt-6">
+  <h3 className="font-medium mb-2">車の有効/無効（表示する台数を調整）</h3>
+  <div className="grid grid-cols-4 gap-2">
+    {VEHICLE_IDS.map((vid, i) => (
+      <label key={vid} className="flex items-center gap-2 border rounded px-2 py-1">
+        <input
+          type="checkbox"
+          checked={!!enabledVehicles[vid]}
+          onChange={(e) => {
+            const on = e.target.checked;
+            setEnabledVehicles(prev => ({ ...prev, [vid]: on }));
+          }}
+        />
+        <span className="text-sm">
+          {vehicleNames[vid] || `車${i + 1}`}（{vid}）
+        </span>
+      </label>
+    ))}
+  </div>
+  <div className="text-xs text-gray-500 mt-1">
+    チェックを外すと、その車の枠は非表示（＝使わない場所）。<br/>
+    表示中の車だけがドラッグ&ドロップやCSV出力の対象になります。
+  </div>
+</div>
+{/* ここまで：車の有効/無効 */}
+
                 <div key={i} className="flex items-center gap-2">
                   <input className="border rounded px-2 py-1 w-40" value={g.name}
                     onChange={(e) => setGroups(prev => prev.map((x, idx) => idx === i ? { ...x, name: e.target.value } : x))} />
