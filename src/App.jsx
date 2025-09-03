@@ -130,6 +130,10 @@ export default function App() {
       { id: uid(), name: "田中 三郎", group: "灰" },
     ]
   );
+　// 追加：車の有効/無効（デフォルトは全ON）
+　const [enabledVehicles, setEnabledVehicles] = useState(
+  persisted?.enabledVehicles ?? Object.fromEntries(VEHICLE_IDS.map(id => [id, true]))
+);
 
   // 日付→便→配車
   const [byDate, setByDate] = useState/** @type {Record<string,{go:any,back:any}>} */(
@@ -183,8 +187,9 @@ export default function App() {
 
   // 保存
   useEffect(() => {
-    LS.save({ students, byDate, vehicleNames, selectedDate, mode, groups, groupLock, rosterWidth, wbMargins, wbGaps });
-  }, [students, byDate, vehicleNames, selectedDate, mode, groups, groupLock, rosterWidth, wbMargins, wbGaps]);
+    LS.save({ students, byDate, vehicleNames, selectedDate, mode, groups, groupLock, rosterWidth, wbMargins, wbGaps,
+    enabledVehicles,  });
+  }, [students, byDate, vehicleNames, selectedDate, mode, groups, groupLock, rosterWidth, wbMargins, wbGaps, enabledVehicles]);
 
   const dayData = byDate[selectedDate] ?? { go: emptyVehicleMap(), back: emptyVehicleMap() };
   const vehicles = mode === "go" ? dayData.go : dayData.back;
