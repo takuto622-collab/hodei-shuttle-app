@@ -7,6 +7,12 @@ const VEHICLE_COUNT = 8;
 const VEHICLE_IDS = Array.from({ length: VEHICLE_COUNT }, (_, i) => `v${i + 1}`);
 const STORAGE_KEY = "dispatch-mvp-v5"; // v5: 設定/所属色固定/カレンダー/OCR
 
+// Safari/iPad対策: structuredClone が無い環境向けフォールバック
+const clone = (obj) =>
+  typeof structuredClone === "function"
+    ? structuredClone(obj)
+    : JSON.parse(JSON.stringify(obj));
+
 // ---- 日付
 function fmt(d){ return d.toISOString().slice(0,10); }
 function todayStr(){ return fmt(new Date()); }
@@ -117,7 +123,7 @@ export default function App(){
 
   function updateVehicles(mutator){
     setByDate(prev=>{
-      const copy = structuredClone(prev);
+      const copy = clone(prev;
       if (!copy[selectedDate]) copy[selectedDate] = { go: emptyVehicleMap(), back: emptyVehicleMap() };
       const target = mode==="go" ? copy[selectedDate].go : copy[selectedDate].back;
       const next = mutator(target);
@@ -128,7 +134,7 @@ export default function App(){
 
   function updateTime(vehicleId, studentId, value){
     updateVehicles(prev=>{
-      const copy = structuredClone(prev);
+      const copy = clone(prev;
       const arr = copy[vehicleId];
       const idx = arr.findIndex(a=>a.studentId===studentId);
       if (idx>=0) arr[idx].pickup = value;
@@ -145,7 +151,7 @@ export default function App(){
   function removeStudent(id){
     setStudents(s=>s.filter(x=>x.id!==id));
     setByDate(prev=>{
-      const cp = structuredClone(prev);
+      const cp = clone(prev;
       for (const d of Object.keys(cp)){
         for (const bin of ["go","back"]){
           for (const vid of Object.keys(cp[d][bin])){
@@ -158,7 +164,7 @@ export default function App(){
   }
   function unassignCurrentDay(id){
     updateVehicles(prev=>{
-      const copy = structuredClone(prev);
+      const copy = clone(prev;
       for(const vid of Object.keys(copy)) copy[vid] = copy[vid].filter(a=>a.studentId!==id);
       return copy;
     });
@@ -266,7 +272,7 @@ export default function App(){
       const nameToId = new Map(students.map(s=>[s.name, s.id]));
       const nextStudents = [...students];
       updateVehicles(prev=>{
-        const copy = structuredClone(prev);
+        const copy = clone(prev;
         // いったん全車から除去（この取り込みは上書き系）
         const mark = new Set();
         for(const line of lines){
@@ -408,7 +414,7 @@ export default function App(){
                     if(draggingId && hoverVehicle){
                       const id=draggingId;
                       updateVehicles(prev=>{
-                        const copy=structuredClone(prev);
+                        const copy=clone(prev;
                         for(const vid of Object.keys(copy)) copy[vid] = copy[vid].filter(a=>a.studentId!==id);
                         copy[hoverVehicle].push({ studentId:id, pickup:"" });
                         return copy;
