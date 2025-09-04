@@ -162,6 +162,10 @@ export default function App() {
   // 設定：所属リスト＆ロック
   const [groups, setGroups] = useState(persisted?.groups ?? DEFAULT_GROUPS);
   const [groupLock, setGroupLock] = useState(persisted?.groupLock ?? true); // 初期ON: 固定
+  // --- ホワイトボードOCR用のstate
+  const [wbOpen, setWbOpen] = useState(false);   // モーダルを開くフラグ
+  const [wbImage, setWbImage] = useState(null);  // 選択した画像ファイル
+  const fileInputRef = useRef(null);             // 隠しinputへの参照
 
   // 名簿（全日共通）
   const [students, setStudents] = useState/** @type {Student[]} */(
