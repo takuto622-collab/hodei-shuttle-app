@@ -85,17 +85,55 @@ function emptyVehicleMap() {
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
 // ---- 画像前処理（拡大＋グレースケール＋二値化）
-async function preprocessImageBlob(blob) {
+// 画像前処理：拡大 → グレースケール → 自動二値化（Otsu） → 濃さ調整
+async function preprocessImageBlob(blob, { scale = 2, invert = false } = {}) {
   const img = new Image();
   const url = URL.createObjectURL(blob);
   await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
 
-  const scale = 2;
   const canvas = document.createElement("canvas");
   canvas.width = img.naturalWidth * scale;
   canvas.height = img.naturalHeight * scale;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = id.data;
+
+  // 1) グレースケール + ヒストグラム
+  const hist = new Array(256).fill(0);
+  for (let i = 0; i < d.length; i += 4) {
+    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    const gi = Math.max(0, Math.min(255, g | 0));
+    d[i] = d[i + 1] = d[i + 2] = gi;
+    hist[gi]++;
+  }
+
+  // 2) Otsu で二値化のしきい値を自動決定
+  let total = canvas.width * canvas.height;
+  let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0, wB = 0, wF = 0, max = 0, threshold = 180;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (wB === 0) continue;
+    wF = total - wB; if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const between = wB * wF * (mB - mF) * (mB - mF);
+    if (between > max) { max = between; threshold = t; }
+  }
+
+  // 3) 二値化 + 反転オプション
+  for (let i = 0; i < d.length; i += 4) {
+    const v = d[i] > threshold ? 255 : 0;
+    const bin = invert ? (255 - v) : v;
+    d[i] = d[i + 1] = d[i + 2] = bin;
+  }
+  ctx.putImageData(id, 0, 0);
+
+  URL.revokeObjectURL(url);
+  return await new Promise((res) => canvas.toBlob((b) => res(b), "image/png"));
+}
 
   const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const d = id.data;
