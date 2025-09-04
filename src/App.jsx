@@ -1,14 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 
-// --- OCR: 共有オプション（Safari対策: 外部辞書URLを明示）
-const TESS_OPTS = { langPath: "https://tessdata.projectnaptha.com/4.0.0" };
-  // 日本語辞書のCDN（軽量で安定）
+// --- OCR: Safari安定化のための辞書場所（トップレベルに1回だけ）
+const TESS_OPTS = {
   langPath: "https://tessdata.projectnaptha.com/4.0.0",
-  // 解析モード: 6=単一ブロック内のテキスト（ホワイトボードの枠向き）
-  // 必要なら 4（段落）/ 11（スパース）に変更して試せます
-  // 注意：tesseract.js v5では "psm" は config で渡す
-  // 例: { tessedit_pageseg_mode: 6 }
 };
+
+/* =========================
+   放デイ送迎アプリ v7
+   （このコメントはそのままでOK）
+   ========================= */
+
 
 /* =========================
    放デイ送迎アプリ v7
