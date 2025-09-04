@@ -481,89 +481,98 @@ async function importFromImage(file) {
 }
 
 
-  // ---- ホワイトボード領域指定 OCR（8車グリッド）
-  async function wbRunImport() {
-    if (!wbImage) return;
-    setOcrBusy(true);
-    setOcrLog("ホワイトボード画像解析…");
+  // === BEGIN REPLACE wbRunImport ===
+// ホワイトボード画像を 4x2 = 8セルに分割してOCR（安定版）
+async function wbRunImport() {
+  if (!wbImage) return;
+  setOcrBusy(true);
+  setOcrLog("ホワイトボード画像解析…");
 
-    try {
-      // 元画像サイズ取得
-      const img = new Image();
-      const url = URL.createObjectURL(wbImage);
-      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
-      const W = img.naturalWidth, H = img.naturalHeight;
-      URL.revokeObjectURL(url);
+  try {
+    // 元画像サイズ
+    const img = new Image();
+    const url = URL.createObjectURL(wbImage);
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+    const W = img.naturalWidth, H = img.naturalHeight;
+    URL.revokeObjectURL(url);
 
-      // マージン・ギャップ（%）から8セル（4x2）座標を算出
-      const leftPx = (wbMargins.left / 100) * W;
-      const rightPx = (wbMargins.right / 100) * W;
-      const topPx = (wbMargins.top / 100) * H;
-      const bottomPx = (wbMargins.bottom / 100) * H;
-      const gridW = W - leftPx - rightPx;
-      const gridH = H - topPx - bottomPx;
-      const colGapPx = (wbGaps.col / 100) * gridW;
-      const rowGapPx = (wbGaps.row / 100) * gridH;
+    // %指定 → pxに
+    const leftPx = (wbMargins.left / 100) * W;
+    const rightPx = (wbMargins.right / 100) * W;
+    const topPx = (wbMargins.top / 100) * H;
+    const bottomPx = (wbMargins.bottom / 100) * H;
+    const gridW = W - leftPx - rightPx;
+    const gridH = H - topPx - bottomPx;
+    const colGapPx = (wbGaps.col / 100) * gridW;
+    const rowGapPx = (wbGaps.row / 100) * gridH;
 
-      const cellW = (gridW - colGapPx * 3) / 4;
-      const cellH = (gridH - rowGapPx * 1) / 2;
+    const cellW = (gridW - colGapPx * 3) / 4;
+    const cellH = (gridH - rowGapPx * 1) / 2;
 
-      const cells = [];
-      for (let r = 0; r < 2; r++) {
-        for (let c = 0; c < 4; c++) {
-          const x = Math.round(leftPx + c * (cellW + colGapPx));
-          const y = Math.round(topPx + r * (cellH + rowGapPx));
-          cells.push({ x, y, w: Math.round(cellW), h: Math.round(cellH) });
-        }
+    // 左上→右へ（4列）、次の行の左→右（計8セル）
+    const cells = [];
+    for (let r = 0; r < 2; r++) {
+      for (let c = 0; c < 4; c++) {
+        const x = Math.round(leftPx + c * (cellW + colGapPx));
+        const y = Math.round(topPx + r * (cellH + rowGapPx));
+        cells.push({ x, y, w: Math.round(cellW), h: Math.round(cellH) });
       }
+    }
 
-      // 各セルを切り出し → 前処理 → OCR → v1..v8に順に割当
-      const { default: Tesseract } = await import("tesseract.js");
-      const nameToId = new Map(students.map(s => [s.name, s.id]));
-      const nextStudents = [...students];
+    const { default: Tesseract } = await import("tesseract.js");
+    const nameToId = new Map(students.map(s => [s.name, s.id]));
+    const nextStudents = [...students];
 
-      updateVehicles(prev => {
-        const copy = clone(prev);
-        // 一旦全車クリア（上書き想定）
-        for (const vid of Object.keys(copy)) copy[vid] = [];
+    // いったん「現在の便」の全車を空に（上書き運用）
+    updateVehicles(prev => {
+      const cp = clone(prev);
+      for (const vid of Object.keys(cp)) cp[vid] = [];
+      return cp;
+    });
 
-        return copy;
+    // 各セルごとに切り出し → 前処理 → OCR → v1..v8へ
+    for (let i = 0; i < cells.length; i++) {
+      const crop = await cropBlob(wbImage, cells[i]);
+      const pre = await preprocessImageBlob(crop, { scale: 2, invert: false });
+
+      const { data } = await Tesseract.recognize(pre, "jpn", {
+        ...TESS_OPTS,                 // ← 日本語辞書の場所（Safari安定）
+        tessedit_pageseg_mode: 6,     // ← 1セル=1ブロック
+        tessedit_char_whitelist:
+          "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789一二三四五六七八九十〇零号車行帰名・、,-:： 　"
       });
 
-      for (let i = 0; i < cells.length; i++) {
-        const crop = await cropBlob(wbImage, cells[i]);
-        const pre = await preprocessImageBlob(crop);
-        const { data } = await Tesseract.recognize(pre, "jpn", {
-          tessedit_char_whitelist:
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789一二三四五六七八九十〇零号車行帰名・、,-:： 　"
-        });
-        const text = (data?.text ?? "").replace(/\s+/g, " ");
-        // セル内の名前候補（区切り：空白/読点/中黒など）
-        const names = text.split(/[,\s、・]+/).map(s => s.trim()).filter(Boolean);
+      const text = (data?.text ?? "").replace(/\s+/g, " ");
+      const names = text.split(/[,\s、・]+/).map(s => s.trim()).filter(Boolean);
 
-        updateVehicles(prev => {
-          const copy = clone(prev);
-          const vid = `v${i + 1}`; // 左上→右、次の行の左→右
-          for (const nm of names) {
-            if (!nm) continue;
-            if (!nameToId.has(nm)) { const id = uid(); nameToId.set(nm, id); nextStudents.push({ id, name: nm }); }
-            const id = nameToId.get(nm);
-            for (const k of Object.keys(copy)) copy[k] = copy[k].filter(a => a.studentId !== id);
-            copy[vid].push({ studentId: id, pickup: "" });
+      updateVehicles(prev => {
+        const cp = clone(prev);
+        const vid = `v${i + 1}`; // 左上= v1
+        for (const nm of names) {
+          if (!nm) continue;
+          if (!nameToId.has(nm)) {
+            const id = uid(); nameToId.set(nm, id); nextStudents.push({ id, name: nm });
           }
-          return copy;
-        });
-      }
-      setStudents(nextStudents);
-      setOcrLog("ホワイトボード取り込み完了");
-      setWbOpen(false);
-    } catch (e) {
-      console.error(e);
-      setOcrLog("取り込み失敗。マージン/ギャップを調整して再試行してください。");
-    } finally {
-      setTimeout(() => setOcrBusy(false), 800);
+          const id = nameToId.get(nm);
+          // 他車に既に居たら除去してから追加（重複防止）
+          for (const k of Object.keys(cp)) cp[k] = cp[k].filter(a => a.studentId !== id);
+          cp[vid].push({ studentId: id, pickup: "" });
+        }
+        return cp;
+      });
     }
+
+    setStudents(nextStudents);
+    setOcrLog("ホワイトボード取り込み完了");
+    setWbOpen(false);
+  } catch (e) {
+    console.error(e);
+    setOcrLog("取り込み失敗。マージン/ギャップや照明を調整して再試行してください。");
+  } finally {
+    setTimeout(() => setOcrBusy(false), 800);
   }
+}
+// === END REPLACE wbRunImport ===
 
   function resetAll() {
     if (!confirm("すべて初期化しますか？")) return;
