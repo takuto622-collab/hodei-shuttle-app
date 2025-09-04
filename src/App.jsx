@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 // --- OCR: 共有オプション（Safari対策: 外部辞書URLを明示）
-const TESS_OPTS = {
+const TESS_OPTS = { langPath: "https://tessdata.projectnaptha.com/4.0.0" };
   // 日本語辞書のCDN（軽量で安定）
   langPath: "https://tessdata.projectnaptha.com/4.0.0",
   // 解析モード: 6=単一ブロック内のテキスト（ホワイトボードの枠向き）
@@ -402,55 +402,84 @@ export default function App() {
   }
 
   // ---- OCR（β）：行解析（従来の簡易取込）
-  async function importFromImage(file) {
-    setOcrBusy(true);
-    setOcrLog("前処理…");
-    try {
-      const processed = await preprocessImageBlob(file);
-      setOcrLog("OCR読込…");
-      const { default: Tesseract } = await import("tesseract.js");
-      setOcrLog("解析中…");
-      const { data } = await Tesseract.recognize(processed, "jpn", {
-        tessedit_char_whitelist:
-          "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789一二三四五六七八九十〇零号車行帰名・、,-:： 　"
-      });
-      const text = data?.text ?? "";
-      setOcrLog("取込中…");
-      const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-      const nameToId = new Map(students.map(s => [s.name, s.id]));
-      const nextStudents = [...students];
-      updateVehicles(prev => {
-        const copy = clone(prev);
-        const touched = new Set();
-        for (const line of lines) {
-          const m = line.match(/(?:車\s*(\d+)|(\d+)号車)/);
-          let carIdx = null;
-          if (m) carIdx = parseInt(m[1] || m[2], 10);
-          let namesPart = line;
-          if (/:|：/.test(line)) namesPart = line.split(/:|：/).slice(1).join(" ");
-          namesPart = namesPart.replace(/(?:車\s*\d+|\d+号車)/g, "");
-          const names = namesPart.split(/[,\s、・]+/).map(s => s.trim()).filter(Boolean);
-          if (carIdx && carIdx >= 1 && carIdx <= 8 && names.length) {
-            const vid = `v${carIdx}`;
-            if (!touched.has(vid)) { copy[vid] = []; touched.add(vid); }
-            for (const nm of names) {
-              if (!nameToId.has(nm)) { const id = uid(); nameToId.set(nm, id); nextStudents.push({ id, name: nm }); }
-              const id = nameToId.get(nm);
-              for (const k of Object.keys(copy)) copy[k] = copy[k].filter(a => a.studentId !== id);
-              copy[vid].push({ studentId: id, pickup: "" });
+ // 1枚の画像からOCR（行解析・安定版）
+async function importFromImage(file) {
+  setOcrBusy(true);
+  setOcrLog("前処理…");
+
+  try {
+    // 濃淡に強い前処理（Otsu二値化）。薄い時は invert: true も試せる
+    const processed = await preprocessImageBlob(file, { scale: 2, invert: false });
+
+    setOcrLog("OCR読込…");
+    const { default: Tesseract } = await import("tesseract.js");
+
+    setOcrLog("解析中…");
+    const { data } = await Tesseract.recognize(processed, "jpn", {
+      ...TESS_OPTS,                    // ← 日本語辞書の場所を指定（Safari安定）
+      tessedit_pageseg_mode: 6,        // ← 1枠=1テキストブロックとして扱う
+      tessedit_char_whitelist:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789一二三四五六七八九十〇零号車行帰名・、,-:： 　"
+    });
+
+    const text = data?.text ?? "";
+    setOcrLog("取込中…");
+
+    // 例）「3号車：山田,佐藤」などを行ごとに処理
+    const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+
+    const nameToId = new Map(students.map(s => [s.name, s.id]));
+    const nextStudents = [...students];
+
+    updateVehicles(prev => {
+      const copy = clone(prev);
+      const touched = new Set();
+
+      for (const line of lines) {
+        const m = line.match(/(?:車\s*(\d+)|(\d+)号車)/);
+        let carIdx = null;
+        if (m) carIdx = parseInt(m[1] || m[2], 10);
+
+        let namesPart = line;
+        if (/:|：/.test(line)) namesPart = line.split(/:|：/).slice(1).join(" ");
+        namesPart = namesPart.replace(/(?:車\s*\d+|\d+号車)/g, "");
+
+        const names = namesPart
+          .split(/[,\s、・]+/)
+          .map(s => s.trim())
+          .filter(Boolean);
+
+        if (carIdx && carIdx >= 1 && carIdx <= 8 && names.length) {
+          const vid = `v${carIdx}`;
+          if (!touched.has(vid)) { copy[vid] = []; touched.add(vid); }
+          for (const nm of names) {
+            if (!nameToId.has(nm)) {
+              const id = uid();
+              nameToId.set(nm, id);
+              nextStudents.push({ id, name: nm });
             }
+            const id = nameToId.get(nm);
+            for (const k of Object.keys(copy)) {
+              copy[k] = copy[k].filter(a => a.studentId !== id);
+            }
+            copy[vid].push({ studentId: id, pickup: "" });
           }
         }
-        setStudents(nextStudents);
-        return copy;
-      });
-      setOcrLog("完了");
-    } catch (e) {
-      console.error(e); setOcrLog("OCR失敗");
-    } finally {
-      setTimeout(() => setOcrBusy(false), 600);
-    }
+      }
+
+      setStudents(nextStudents);
+      return copy;
+    });
+
+    setOcrLog("完了");
+  } catch (e) {
+    console.error(e);
+    setOcrLog("OCR失敗（照明・ピント・傾き／辞書ロードを確認）");
+  } finally {
+    setTimeout(() => setOcrBusy(false), 600);
   }
+}
+
 
   // ---- ホワイトボード領域指定 OCR（8車グリッド）
   async function wbRunImport() {
