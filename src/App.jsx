@@ -604,8 +604,27 @@ async function wbRunImport() {
           </label>
           <label className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300 cursor-pointer">画像（行解析β）
             <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files && importFromImage(e.target.files[0])} />
-          </label>
-          <button className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300" onClick={() => setWbOpen(true)}>ホワイトボードから</button>
+          </label><button
+  className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300"
+  onClick={() => fileInputRef.current?.click()}
+>
+  ホワイトボードから
+</button>
+
+<input
+  ref={fileInputRef}
+  type="file"
+  accept="image/*"
+  className="hidden"
+  onChange={(e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setWbImage(f);        // 画像ファイルを保存
+    setWbOpen(true);      // モーダルを開く
+    e.target.value = "";  // 同じファイルを選んでも再発火するようにリセット
+  }}
+/>
+
           <button className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300" onClick={() => setOpenSettings(true)}>設定</button>
           <button className="px-3 py-1.5 rounded-lg bg-gray-200 hover:bg-gray-300" onClick={printView}>印刷</button>
           <button className="px-3 py-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600" onClick={resetAll}>初期化</button>
