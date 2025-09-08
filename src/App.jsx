@@ -219,9 +219,7 @@ export default function App() {
   const [rosterWidth, setRosterWidth] = useState(persisted?.rosterWidth ?? 360);
   const [resizing, setResizing] = useState(false);
 
-  // ホワイトボード取り込みモーダル
-  const [wbOpen, setWbOpen] = useState(false);
-  const [wbImage, setWbImage] = useState/** @type {Blob|null} */(null);
+  
   // グリッド配置（%単位）
   const [wbMargins, setWbMargins] = useState(persisted?.wbMargins ?? { top: 5, left: 5, right: 5, bottom: 5 });
   const [wbGaps, setWbGaps] = useState(persisted?.wbGaps ?? { col: 2, row: 2 });
